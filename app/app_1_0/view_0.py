@@ -1,56 +1,13 @@
 # coding:utf-8
-'''
-    1. 优化代码添加装饰器
-    2. 设置请求发送之前触发的函数
-    3. 改变redis的通道
-'''
+# https://www.cnblogs.com/yueerwanwan0204/p/5330201.html
+from flask import Flask, request, jsonify 
+from model import User, db_session
 import hashlib
 import time
-
-from flask import Flask, request, jsonify, g
 import redis
-from functools import wraps # 装饰器
-
-from model import User, db_session
-
-
 
 app = Flask(__name__)
 redis_store = redis.Redis(host='localhost', port=6379, db=4, password='')
-
-# 装饰器函数
-def login_check(f):
-    '''
-        优化代码 方法进行token验证的时候优化一次
-    '''
-    @wraps(f)
-    def decorator(*args, **kwargs):
-        token = request.headers.get('token')
-        if not token:
-            return jsonify({'code': 0, 'message': '请先登录'})
-        
-        phone_number = redis_store.get('token:{0}'.format(token))
-        if phone_number:
-            phone_number = phone_number.decode('utf-8')
-        import ipdb; ipdb.set_trace()
-        if not phone_number or token != redis_store.hget('user:%s' % phone_number, 'token').decode('utf-8'):
-            return jsonify({'code': 2, 'message': '验证信息错误'})
-
-        return f(*args, **kwargs)
-    return decorator
-
-# 在放请求之前使用的方法
-@app.before_request
-def before_request():
-    token = request.headers.get('token')
-    # 获得电话号码        
-    phone_number = redis_store.get('token:{0}'.format(token))
-    # 查询数据库并返回设置为全局参数
-    if phone_number:
-        # import ipdb; ipdb.set_trace()
-        phone_number = phone_number.decode('utf-8')
-        g.current_user = User.query.filter_by(phone_number=phone_number).first()
-        g.token = token
 
 
 @app.route('/')
@@ -70,18 +27,14 @@ def login():
     # 获取用户传入的参数
     phone_number = request.values.get('phone_number')
     password = request.values.get('password')
-    # import ipdb; ipdb.set_trace()
-    user = User.query.filter_by(phone_number=phone_number).first()
     
+    user = User.query.filter_by(phone_number=phone_number).first()
     if not user:
         return jsonify({'code': 0, 'message': '没有此用户'})
 
     if user.password != password:
         return jsonify({'code': 0, 'message': '密码错误'})
-    # 查询是否登录
-    if redis_store.hget('user:{0}'.format(phone_number), 'token'):
-        return jsonify({'message': '您已登录，不需再次登录', 'code':'0'})
-
+    # import ipdb; ipdb.set_trace()
     # md5加密
     m = hashlib.md5()
     m.update(phone_number.encode('utf-8'))
@@ -100,37 +53,52 @@ def login():
 
 
 @app.route('/user')
-@login_check
 def user():
     '''
-        查询用户
+        查询中带着用户登录的token值
     '''
-    user = g.current_user
+    token = request.headers.get('token')
+    
+    if not token:
+        return jsonify({'code': 0, 'message': '需要验证'})
+    # 传入tokenMD5查询reids数据库查看是否有相同数据
+    
+    phone_number = redis_store.get('token:{0}'.format(token)).decode('utf-8')
+    # redis_store.hget('user:{0}'.format(phone_number), 'token')
+    # 查询redis数据库中的哈希表 查询之中是否有存在相关数据 
+    
+    if not phone_number or token != redis_store.hget('user:{0}'.format(phone_number), 'token').decode('utf-8'):
+        # 判断电话号码是否为空 或者判断 md5加密值是否相同
+        return jsonify({'code': 2, 'message': '验证信息错误'})
     # 获得昵称
-    nickname = redis_store.hget('user:{0}'.format(user.phone_number), 'nickname').decode('utf-8')
-    return jsonify({'code': 200, 'nickname': nickname, 'phone_number': user.phone_number})
+    nickname = redis_store.hget('user:{0}'.format(phone_number), 'nickname').decode('utf-8')
+    return jsonify({'code': 200, 'nickname': nickname, 'phone_number': phone_number})
 
 
 @app.route('/logout')
-@login_check
 def logout():
     '''
         用户注销
     '''
-    user = g.current_user
-    # 修改redis 的通道
-    pipeline = redis_store.pipeline()
-    pipeline.delete('token:%s' % g.token)
-    # 存入hash的数据
-    pipeline.hmset('user:{0}'.format(user.phone_number), {'app_online': 0})
-    pipeline.execute()
+    token = request.headers.get('token')
+    if not token:
+        return jsonify({'code': 0, 'message': '需要验证'})
+    phone_number = redis_store.get('token:{0}'.format(token))
+    if phone_number :
+        phone_number = phone_number.decode('utf-8')
+    # import ipdb; ipdb.set_trace()
+    if not phone_number or token != redis_store.hget('user:%s' % phone_number, 'token').decode('utf-8'):
+        return jsonify({'code': 2, 'message': '验证信息错误'})
+
+    redis_store.delete('token:%s' % token)
+    redis_store.hmset('user:%s' % phone_number, {'app_online': 0})
     return jsonify({'code': 200, 'message': '成功注销'})
 
 
-@app.route('/user/register', methods=['POST'])
-def userregister():
+@app.route('/user/add', methods=['POST'])
+def useradd():
     '''
-        用户注册
+        用户添加
     '''
     # 得到用户参数
     phone_number = request.values.get('phone_number')
@@ -167,20 +135,29 @@ def userregister():
     return jsonify({'message': '注册成功', 'code': 200})
 
 
-@app.route('/user/alter', methods=['PUT'])
-@login_check
-def useralter():
+@app.route('/user/up', methods=['PUT'])
+def userup():
     '''
         用户修改
     '''
     # 得到用户参数
+    token = request.headers.get('token')
     new_phone_number = request.values.get('new_phone_number')
     new_password = request.values.get('new_password')
     new_nickname = request.values.get('new_nickname')
+    # import ipdb; ipdb.set_trace()
+    # 非空判断
+    if not token:
+        return jsonify({'message': '请先登录', 'code': 0})
+    # import ipdb; ipdb.set_trace()
     # 根据登陆的token 获得所登陆者的电话号码
-    
+    phone_number = redis_store.get('token:{0}'.format(token))
+    if phone_number:
+        phone_number.decode('utf-8')
+    if not phone_number:
+        return jsonify({'message': '请先登录', 'code': 0})
     # 获得用户
-    user = g.current_user
+    user = User.query.filter_by(phone_number=phone_number).first()
     # 修改电话号码
     if new_phone_number and len(new_phone_number) != 11:
         return jsonify({'message': '电话位数不符合', 'code': 2})
@@ -190,11 +167,8 @@ def useralter():
         return jsonify({'message': '密码至少六位数', 'code': 2})
     # import ipdb; ipdb.set_trace()
     # 判断输入的密码和电话是否有为空的 不为空则修改原始数据
-    # 原始电话
-    phone_number = user.phone_number
-
     if new_phone_number:
-        user.phone_number = new_phone_number
+        user.phone_number = phone_number
     if new_password:
         user.password = new_password
     # 判断用户昵称是否修改了
@@ -204,11 +178,8 @@ def useralter():
     db_session.add(user)
     db_session.flush()
     db_session.commit()
-
-    
-    redis_store.delete('token:{0}'.format(g.token))
-    redis_store.delete('user:{0}'.format(phone_number))
-
+    redis_store.delete('token:%s' % token)
+    redis_store.delete('user:%s' % phone_number)
     return jsonify({'message': '修改成功，请重新登陆', 'code': 200})
 
 @app.teardown_request
