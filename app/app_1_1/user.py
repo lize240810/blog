@@ -6,6 +6,7 @@
 '''
 import hashlib
 import time
+import random
 
 from flask import (
     Flask, request, jsonify, g, current_app
@@ -14,6 +15,7 @@ from flask import (
 from app.model import User, db_session
 from .decorators import login_check
 from . import api
+from app.utils import message_validate
 
 
 @api.route('/login', methods=['POST'])
@@ -93,7 +95,7 @@ def logout():
     return jsonify({'code': 200, 'message': '成功注销'})
 
 
-@api.route('/user/register', methods=['POST'])
+@api.route('/user/register-step-1', methods=['POST'])
 def userregister():
     '''
         用户注册
@@ -109,6 +111,11 @@ def userregister():
     elif len(phone_number) != 11:
         return jsonify({'message': '电话位数不符合', 'code': 2})
 
+        # 判断号码是否被使用
+    user = User.query.filter_by(phone_number=phone_number).first()
+    if user:
+        return jsonify({'message': '该号码已被注册', 'code': 1})
+
     if not password:
         return jsonify({'message': '密码不允许为空', 'code': 0})
     if len(password) < 6:
@@ -123,21 +130,148 @@ def userregister():
     s.update('password'.encode('utf-8'))
     encryption_str = s.hexdigest()
     
-    # 判断号码是否被使用
-    user = User.query.filter_by(phone_number=phone_number).first()
-    # import ipdb; ipdb.set_trace()
-    if user:
-        return jsonify({'message': '该号码已被注册', 'code': 1})
+
     u1 = User()
     u1.password= encryption_str
     u1.phone_number= phone_number
     u1.nickname = nickname
-    # import ipdb; ipdb.set_trace()
     db_session.add(u1)
     db_session.flush()
     db_session.commit()
-    # import ipdb; ipdb.set_trace()    
     return jsonify({'message': '注册成功', 'code': 200})
+
+
+@api.route('/send_sms', methods=['POST'])
+def send_validate_number():
+    """
+        接受phone_number,发送短信
+    """
+    phone_number = request.values.get('phone_number')
+    # 获得验证码
+    validate_number = str(random.randint(100000, 1000000))
+    # 判断号码是否被使用
+    user = User.query.filter_by(phone_number = phone_number).first()
+    if user:
+        return jsonify({'code': 0, 'message': '该用户已经存在,注册失败'})
+
+    # 用户的电话和验证码
+    result, err_message = message_validate(phone_number, validate_number)
+    # 发送失败
+    if not result:
+        return jsonify({'code': 0, 'message': err_message})
+    pipeline = current_app.redis.pipeline()
+    pipeline.set('validate:%s' % phone_number, validate_number)
+    # 设置存在时间为60秒
+    pipeline.expire('validate:%s' % phone_number, 600)
+    pipeline.execute()
+    return jsonify({'code': 200, 'message': '发送成功'})
+
+
+@api.route('/verification_validate_number', methods=['POST'])
+def verification_validate_number():
+    '''
+        验证码验证
+    '''
+    phone_number = request.values.get('phone_number')
+
+    # 获取验证码
+    validate_number = request.values.get('validate_number')
+    
+    # redis中的验证码
+    validate_number_redis = current_app.redis.get('validate:{0}'.format(phone_number))
+    if validate_number_redis:
+        validate_number_redis = validate_number_redis.decode('utf-8')
+    
+    if validate_number != validate_number_redis:
+        return jsonify({'code': 2, 'message': '验证码不正确'})
+    
+    # 创建新的通道
+    pipe_line = current_app.redis.pipeline()
+    # 验证码验证成功以后根据号码存入1 
+    pipe_line.set('is_validate:%s' % phone_number, '1')
+    # 两分钟过期
+    pipe_line.expire('is_validate:%s' % phone_number, 120)
+    # 销毁redis通道
+    pipe_line.execute()
+ 
+    return jsonify({'code': 1, 'message': '短信验证通过'})
+
+
+@api.route('/password_verify', methods=['POST'])
+def password_verify():
+    '''
+        密码验证
+    '''
+    phone_number = request.values.get('phone_number')
+    password = request.values.get('password')
+    password_confirm = request.values.get('password_confirm')
+    
+    if not password:
+        return jsonify({'message': '密码不允许为空', 'code': 0})
+    if len(password) < 6:
+        return jsonify({'message': '密码至少六位数', 'code': 2})
+    if password_confirm != password :
+        return jsonify({'message': '两次输入的密码不相同', 'code': 2})
+    # 获取redis中数据
+    is_validate = current_app.redis.get('is_validate:{0}'.format(phone_number))
+    if is_validate:
+        if is_validate.decode('utf-8') != '1' :
+            return jsonify({'message':'验证码不正确', 'code':'2'})
+    
+    # 密码加密
+    s = hashlib.sha256()
+    s.update(password.encode('utf-8'))
+    s.update(phone_number[:3:2].encode('utf-8'))
+    s.update('password'.encode('utf-8'))
+    encryption_str = s.hexdigest()
+    # 创建redis通道
+    pipeline = current_app.redis.pipeline() 
+    pipeline.hset('register:{0}'.format(phone_number), 'password',encryption_str)
+    pipeline.expire('register:%s' % phone_number, 200)
+    pipeline.execute()
+    return jsonify({'code':200, 'message':' 提交密码成功'})
+
+
+@api.route('/user/register-step-2', methods=['POST'])
+def userregister_2():
+    '''
+        用户注册
+    '''
+    phone_number = request.values.get('phone_number')
+    nickname = request.values.get('nickname')
+    # 非空判断
+    if not phone_number:
+        return jsonify({'message': '请输入电话号码', 'code': 0})
+    elif len(phone_number) != 11:
+        return jsonify({'message': '电话位数不符合', 'code': 2})
+    import ipdb; ipdb.set_trace()
+    # 从redis中获取验证码是否验证成功
+    is_validate = current_app.redis.get('is_validate:{0}'.format(phone_number))
+    if is_validate:
+        is_validate = is_validate.decode('utf-8')
+    if is_validate != '1':
+        return jsonify({'code':0, 'message': '验证码没验证成功'})
+
+    # 获取password 
+    password = current_app.redis.hget('register:{0}'.format(phone_number),'password')
+    if password:
+        password = password.decode('utf-8')
+    if not nickname:
+        nickname = '张三同学'
+    new_user = User(phone_number=phone_number, password=password, nickname=nickname)    
+    db_session.add(new_user)
+
+    try:
+        db_session.commit()
+    except Exception as e:
+        print(e)
+        db_session.rollback()
+        return jsonify({'code':1, 'message': '注册失败'})
+    finally:
+        current_app.redis.delete('is_validate:{0}'.format(phone_number))
+        current_app.redis.delete('register:{0}'.format(phone_number))
+    
+    return jsonify({'code': 200, 'message': '注册成功'})
 
 
 @api.route('/user/alter', methods=['PUT'])
@@ -178,38 +312,7 @@ def useralter():
     db_session.flush()
     db_session.commit()
 
-    
     current_app.redis.delete('token:{0}'.format(g.token))
     current_app.redis.delete('user:{0}'.format(phone_number))
 
     return jsonify({'message': '修改成功，请重新登陆', 'code': 200})
-
-
-@api.route('/set-head-picture', methods=['POST'])
-@login_check
-def set_head_picture():
-    '''
-        图片名存储到数据库与七牛
-    '''
-    user = g.current_user
-    # 获得图片的七牛云图片
-    # import ipdb; ipdb.set_trace()
-    head_picture = get_qiniu_token(user.phone_number).json
-    code, key, token = get_qiniu_token(user.phone_number).json.values()
-    # 用户提交的图片
-    up_head_picture = request.values.get('head_picture')
-    head_picture = 'http://pntn3xhqe.bkt.clouddn.com/{0}'.format(key)
-    user.head_picture = head_picture
-    # 图片上传
-    localfile = r'{0}'.format(up_head_picture)
-    ret, info = put_file(token, key, localfile)
-    try:
-        db_session.commit()
-    except Exception as e:
-        print(e)
-        db_session.rollback()
-        return jsonify({'code': 0, 'message': '未能成功上传'})
-    current_app.redis.hset('user:{0}'.format(user.phone_number), 'head_picture', head_picture)
-    return jsonify({'code': 1, 'message': '成功上传'})
-
-

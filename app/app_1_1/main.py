@@ -81,3 +81,30 @@ def get_multi_qiniu_token():
         token = current_app.q.upload_token(current_app.bucket_name, key, 3600)
         key_token_s.append((key, token))
     return jsonify({'code': 1, 'key_token_s': key_token_s})
+
+@api.route('/set-head-picture', methods=['POST'])
+@login_check
+def set_head_picture():
+    '''
+        图片名存储到数据库与七牛
+    '''
+    user = g.current_user
+    # 获得图片的七牛云图片
+    # import ipdb; ipdb.set_trace()
+    head_picture = get_qiniu_token(user.phone_number).json
+    code, key, token = get_qiniu_token(user.phone_number).json.values()
+    # 用户提交的图片
+    up_head_picture = request.values.get('head_picture')
+    head_picture = 'http://pntn3xhqe.bkt.clouddn.com/{0}'.format(key)
+    user.head_picture = head_picture
+    # 图片上传
+    localfile = r'{0}'.format(up_head_picture)
+    ret, info = put_file(token, key, localfile)
+    try:
+        db_session.commit()
+    except Exception as e:
+        print(e)
+        db_session.rollback()
+        return jsonify({'code': 0, 'message': '未能成功上传'})
+    current_app.redis.hset('user:{0}'.format(user.phone_number), 'head_picture', head_picture)
+    return jsonify({'code': 1, 'message': '成功上传'})
