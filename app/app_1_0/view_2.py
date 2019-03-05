@@ -21,7 +21,7 @@ from qiniu import Auth, put_file, etag, urlsafe_base64_encode # 七牛云
 from flask import Flask, request, jsonify, g, render_template, redirect, url_for, session, current_app
 
 from . import api
-from model import db_session, User
+from app.model import db_session, User
 
 def login_check(f):
     '''

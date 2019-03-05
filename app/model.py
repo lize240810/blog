@@ -7,7 +7,7 @@ from sqlalchemy.orm import relationship, backref, sessionmaker, scoped_session, 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property, hybrid_method
 from sqlalchemy.orm.collections import attribute_mapped_collection
-from config import Conf
+from .config import Conf
 
 # import ipdb; ipdb.set_trace()
 # uri = 'mysql+pymysql://root:root@127.0.0.1:3306/test?charset=utf8'
@@ -56,21 +56,31 @@ class SmallBlog(Base):
     post_user = relationship('User', backref=backref('small_blogs'))
     
 
+    # @hybrid_property
+    # def pictures(self):
+    #     '''
+    #         把方法添加为类属性
+    #     '''
+    #     import ipdb; ipdb.set_trace()
+    #     if not self.picure_content:
+    #         return []
+    #     return self.picure_content.join('')
+
+
+    # @pictures.setter
+    # def pictures(self, urls):
+    #     self.picure_content = urls.split(',')
+    
     @hybrid_property
     def pictures(self):
-        '''
-            把方法添加为类属性
-        '''
-        import ipdb; ipdb.set_trace()
-        if not self.picture_content:
+        if not self.picure_content:
             return []
-        return self.picture_content.split(',')
-
+        return self.picure_content
 
     @pictures.setter
     def pictures(self, urls):
-        import ipdb; ipdb.set_trace()
-        self.picture_content = urls
+        self.picure_content = urls
+
 
     def to_dict(self):
         '''

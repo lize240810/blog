@@ -1,63 +1,19 @@
-# coding:utf-8
+# coding: utf-8
 '''
-    1. 优化代码添加装饰器
-    2. 设置请求发送之前触发的函数
-    3. 改变redis的通道
-    4. 使用了配置文件
-    5. 运行的代码取消了，统一了入口点
-    6. app.router 改成 api.route api 从本地__init__.py中导入
-    7. app.redis，可以用current_app.redis来代替，其实就是在run.py中定义的一些变量，在整颗树中使用。
+    用户模块类
+    登录， 查询，注销
+    注册，修改
 '''
 import hashlib
 import time
-import uuid
-import sys
-import redis
-import random
 
+from flask import (
+    Flask, request, jsonify, g, current_app
+)
 
-import redis
-from functools import wraps # 装饰器
-from qiniu import Auth, put_file, etag, urlsafe_base64_encode # 七牛云
-from flask import Flask, request, jsonify, g, render_template, redirect, url_for, session, current_app
-from sqlalchemy import and_, or_, desc, asc, join, event
-
+from app.model import User, db_session
+from .decorators import login_check
 from . import api
-from model import db_session, User, SmallBlog
-
-def login_check(f):
-    '''
-        装饰器函数
-        优化代码 方法进行token验证的时候优化一次
-    '''
-    @wraps(f)
-    def decorator(*args, **kwargs):
-        token = request.headers.get('token')
-        if not token:
-            return jsonify({'code': 0, 'message': '请先登录'})
-        # 从redis中获取电话号码
-        phone_number = current_app.redis.get('token:{0}'.format(token))
-        if phone_number:
-            phone_number = phone_number.decode('utf-8')
-        # 验证
-        if not phone_number or token != current_app.redis.hget('user:{0}'.format(phone_number), 'token').decode('utf-8'):
-            return jsonify({'code': 2, 'message': '验证信息错误'})
-
-        return f(*args, **kwargs)
-    return decorator
-
-# 在放请求之前使用的方法
-@api.before_request
-def before_request():
-    token = request.headers.get('token')
-    # 获得电话号码        
-    phone_number = current_app.redis.get('token:{0}'.format(token))
-    # 查询数据库并返回设置为全局参数
-    if phone_number:
-        phone_number = phone_number.decode('utf-8')
-        g.current_user = User.query.filter_by(phone_number=phone_number).first()
-        g.token = token
-    return 
 
 
 @api.route('/login', methods=['POST'])
@@ -229,79 +185,11 @@ def useralter():
     return jsonify({'message': '修改成功，请重新登陆', 'code': 200})
 
 
-@api.route('/get-qiniu-token')
-def get_qiniu_token(phone_number):
-    '''
-        获得七牛云的token和key
-    '''
-    key = '{0}/{1}.jpg'.format(phone_number, time.time_ns())
-    # uuid.uuid4()
-    token = current_app.q.upload_token(current_app.bucket_name, key, 3600)
-    return jsonify({'code': 1, 'key': key, 'token': token})
-
-
-@api.route('/get-multi-qiniu-token')
-@login_check
-def get_multi_qiniu_token():
-    '''
-        获取多个七牛token
-    '''
-    count = request.args.get('count')
-
-    if not 0 < int(count) < 10:
-        return jsonify({'code': 0, 'message': '一次只能获取1到9个'})
-
-    key_token_s = []
-    for x in range(int(count)):
-        key = uuid.uuid1()
-        token = current_app.q.upload_token(current_app.bucket_name, key, 3600)
-        key_token_s.append((key, token))
-    return jsonify({'code': 1, 'key_token_s': key_token_s})
-
-
-@api.route('/post-blog', methods=['POST'])
-@login_check
-def post_blog():
-    '''
-        提交新的博文
-    '''
-    user = g.current_user
-    # 接受参数
-    title = request.values.get('title')
-    text_content = request.values.get('text_content')
-    pictures = request.values.get('pictures')
-    # 实例化一个新的博文
-    newblog = SmallBlog(title=title, text_content=text_content, post_user=user)
-    # 博文图片
-    newblog.pictures = pictures
-    import ipdb; ipdb.set_trace()
-    db_session.add(newblog)
-    try:
-        db_session.commit()
-    except Exception as e:
-        print(e)
-        db_session.rollback()
-        return jsonify({'code': 0, 'message': '上传不成功'})
-    return jsonify({'code': 1, 'message': '上传成功'})
-
-
-@api.route('/get-blogs')
-@login_check
-def get_blogs():
-    last_id = request.args.get('last_id')
-    if not int(last_id):
-        blogs = db_session.query(SmallBlog).order_by(desc(SmallBlog.id)).limit(10)
-    else:
-        blogs = db_session.query(SmallBlog).filter(SmallBlog.id < int(last_id)).order_by(desc(SmallBlog.id)).limit(10)
-    return jsonify({'code': 1, 'blogs': [blog.to_dict() for blog in blogs]})
-
-
-
 @api.route('/set-head-picture', methods=['POST'])
 @login_check
 def set_head_picture():
     '''
-        图片名存储到数据库
+        图片名存储到数据库与七牛
     '''
     user = g.current_user
     # 获得图片的七牛云图片
@@ -324,9 +212,4 @@ def set_head_picture():
     current_app.redis.hset('user:{0}'.format(user.phone_number), 'head_picture', head_picture)
     return jsonify({'code': 1, 'message': '成功上传'})
 
-@api.teardown_request
-def handle_teardown_request(exception):
-    '''最后一个很重要，这边一定要记住，把这个函数写上。如果没有这个函数，每一个会话以后，
-    db_session都不会清除，很多时候，数据库改变了，前台找不到，或者明明已经提交，
-    数据库还是没有更改，或者长时间没有访问接口，mysql gong away，这样的错误。总之，一定要加上。'''
-    db_session.remove()
+

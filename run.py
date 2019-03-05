@@ -3,7 +3,7 @@
     启动文件 入口
 '''
 from flask import Flask
-from config import Conf
+from app.config import Conf
 import redis
 from qiniu import Auth, put_file, etag, urlsafe_base64_encode
 
