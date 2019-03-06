@@ -10,7 +10,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, backref
 from . import Base
-from .top1 import User
+from .user import User
 
 
 class SmallBlog(Base):

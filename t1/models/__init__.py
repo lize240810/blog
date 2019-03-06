@@ -13,4 +13,4 @@ db_session = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind
 
 Base.query = db_session.query_property()
 
-from . import top1, top2
+from . import user, smallblog
